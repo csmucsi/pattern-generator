@@ -7,7 +7,8 @@ import matplotlib.patches as patches
 
 def get_layout_signature(layout):
     """Creates a set of coordinates to easily compare if two layouts are identical."""
-    return set((round(b['x']), round(b['y']), round(b['w']), round(b['l'])) for b in layout)
+    # We round to 1 decimal place to avoid floating point precision errors
+    return set((round(b['x'], 1), round(b['y'], 1), round(b['w'], 1), round(b['l'], 1)) for b in layout)
 
 def rotate_layout_180(layout, pallet_w, pallet_l):
     """Rotates the entire layout 180 degrees around the pallet center."""
@@ -33,46 +34,104 @@ def flip_layout_horizontal(layout, pallet_w):
         })
     return flipped
 
+def center_layout(layout, pallet_w, pallet_l):
+    """Calculates the bounding box of the layout and perfectly centers it on the pallet."""
+    if not layout:
+        return []
+        
+    min_x = min(b['x'] for b in layout)
+    max_x = max(b['x'] + b['w'] for b in layout)
+    min_y = min(b['y'] for b in layout)
+    max_y = max(b['y'] + b['l'] for b in layout)
+    
+    layout_w = max_x - min_x
+    layout_l = max_y - min_y
+    
+    # Calculate offsets to center the bounding box
+    offset_x = (pallet_w - layout_w) / 2 - min_x
+    offset_y = (pallet_l - layout_l) / 2 - min_y
+    
+    centered = []
+    for b in layout:
+        centered.append({
+            "x": b['x'] + offset_x,
+            "y": b['y'] + offset_y,
+            "w": b['w'], "l": b['l'],
+            "is_rotated": b['is_rotated']
+        })
+    return centered
+
 def generate_candidate_layouts(pallet_w, pallet_l, box_w, box_l):
-    """Generates a list of different base layouts to try for interlocking."""
+    """Generates uniform and mixed-orientation (Two-Block) layouts, centered on the pallet."""
     candidates = []
     
-    # We will generate variations by shifting the grid to different corners
-    # This forces asymmetry if the boxes do not perfectly fill the pallet.
-    
-    for orientation in [(box_w, box_l, False), (box_l, box_w, True)]:
-        cw, cl, is_rot = orientation
+    # 1. Uniform Grids (All boxes same orientation)
+    for cw, cl, is_rot in [(box_w, box_l, False), (box_l, box_w, True)]:
         cols = int(pallet_w // cw)
         rows = int(pallet_l // cl)
-        
         if cols > 0 and rows > 0:
-            leftover_w = pallet_w - (cols * cw)
-            leftover_l = pallet_l - (rows * cl)
-            
-            # Candidate A: Bottom-Left aligned
-            layout_bl = []
+            layout = []
             for r in range(rows):
                 for c in range(cols):
-                    layout_bl.append({"x": c * cw, "y": r * cl, "w": cw, "l": cl, "is_rotated": is_rot})
-            candidates.append(layout_bl)
+                    layout.append({"x": c * cw, "y": r * cl, "w": cw, "l": cl, "is_rotated": is_rot})
+            candidates.append(center_layout(layout, pallet_w, pallet_l))
             
-            # Candidate B: Top-Right aligned
-            layout_tr = []
-            for r in range(rows):
-                for c in range(cols):
-                    layout_tr.append({"x": leftover_w + (c * cw), "y": leftover_l + (r * cl), "w": cw, "l": cl, "is_rotated": is_rot})
-            candidates.append(layout_tr)
-            
-            # Candidate C: Centered
-            layout_cen = []
-            for r in range(rows):
-                for c in range(cols):
-                    layout_cen.append({"x": (leftover_w/2) + (c * cw), "y": (leftover_l/2) + (r * cl), "w": cw, "l": cl, "is_rotated": is_rot})
-            candidates.append(layout_cen)
-            
-            # You can add more complex split-heuristics here to reach 10 candidates.
-            
-    return candidates
+    # 2. Two-Block Patterns (Vertical Split - Mixed orientations)
+    cols_w = int(pallet_w // box_w)
+    for i in range(1, cols_w):
+        w1 = i * box_w
+        cols_1 = i
+        rows_1 = int(pallet_l // box_l)
+        
+        w2 = pallet_w - w1
+        cols_2 = int(w2 // box_l)
+        rows_2 = int(pallet_l // box_w)
+        
+        if cols_1 > 0 and rows_1 > 0 and cols_2 > 0 and rows_2 > 0:
+            layout = []
+            for r in range(rows_1):
+                for c in range(cols_1):
+                    layout.append({"x": c * box_w, "y": r * box_l, "w": box_w, "l": box_l, "is_rotated": False})
+            for r in range(rows_2):
+                for c in range(cols_2):
+                    layout.append({"x": w1 + (c * box_l), "y": r * box_w, "w": box_l, "l": box_w, "is_rotated": True})
+            candidates.append(center_layout(layout, pallet_w, pallet_l))
+
+    # 3. Two-Block Patterns (Horizontal Split - Mixed orientations)
+    rows_l = int(pallet_l // box_l)
+    for i in range(1, rows_l):
+        l1 = i * box_l
+        rows_1 = i
+        cols_1 = int(pallet_w // box_w)
+        
+        l2 = pallet_l - l1
+        rows_2 = int(l2 // box_w)
+        cols_2 = int(pallet_w // box_l)
+        
+        if cols_1 > 0 and rows_1 > 0 and cols_2 > 0 and rows_2 > 0:
+            layout = []
+            for r in range(rows_1):
+                for c in range(cols_1):
+                    layout.append({"x": c * box_w, "y": r * box_l, "w": box_w, "l": box_l, "is_rotated": False})
+            for r in range(rows_2):
+                for c in range(cols_2):
+                    layout.append({"x": c * box_l, "y": l1 + (r * box_w), "w": box_l, "l": box_w, "is_rotated": True})
+            candidates.append(center_layout(layout, pallet_w, pallet_l))
+
+    # Filter out any empty layouts
+    valid_candidates = [c for c in candidates if len(c) > 0]
+    
+    if not valid_candidates:
+        return []
+        
+    # Sort candidates by the total number of boxes they fit (Descending)
+    # This ensures we don't pick a wildly inefficient layout just because it can interlock
+    valid_candidates.sort(key=lambda x: len(x), reverse=True)
+    max_boxes = len(valid_candidates[0])
+    
+    # Return only the layouts that yield the maximum possible boxes
+    best_candidates = [c for c in valid_candidates if len(c) == max_boxes]
+    return best_candidates
 
 # --- Core Algorithm ---
 def generate_pallet_pattern(pallet_w, pallet_l, box_w, box_l, box_h, layers, interlocking):
@@ -89,11 +148,9 @@ def generate_pallet_pattern(pallet_w, pallet_l, box_w, box_l, box_h, layers, int
     layer_2_layout = None
 
     if not interlocking:
-        # If no interlocking, just use the first standard layout for all layers
         layer_1_layout = candidates[0]
         layer_2_layout = candidates[0]
     else:
-        # Try to find an asymmetrical layout for interlocking
         found_interlock = False
         
         for candidate in candidates:
@@ -105,13 +162,11 @@ def generate_pallet_pattern(pallet_w, pallet_l, box_w, box_l, box_h, layers, int
             sig_rotated = get_layout_signature(rotated)
             sig_flipped = get_layout_signature(flipped)
             
-            # Check if rotation provides a different layout
             if sig_original != sig_rotated:
                 layer_1_layout = candidate
                 layer_2_layout = rotated
                 found_interlock = True
                 break
-            # If rotation is identical, check if horizontal flip provides a different layout
             elif sig_original != sig_flipped:
                 layer_1_layout = candidate
                 layer_2_layout = flipped
@@ -119,7 +174,7 @@ def generate_pallet_pattern(pallet_w, pallet_l, box_w, box_l, box_h, layers, int
                 break
                 
         if not found_interlock:
-            return {"error": "This box size perfectly divides into the pallet and is completely symmetrical. An interlocking pattern cannot be generated."}
+            return {"error": "This specific box configuration perfectly divides into the pallet as a uniform block. A perfectly centered, uniform block is mathematically symmetrical and cannot generate a uniquely interlocking layer."}
 
     # Build final 3D JSON output
     pattern_data = []
@@ -127,7 +182,6 @@ def generate_pallet_pattern(pallet_w, pallet_l, box_w, box_l, box_h, layers, int
     
     for layer in range(layers):
         z_coord = layer * box_h
-        # Alternate between layer 1 and layer 2 layouts
         current_layout = layer_1_layout if layer % 2 == 0 else layer_2_layout
         
         for b in current_layout:
@@ -184,7 +238,7 @@ def plot_layer(pattern_data, layer_num, pallet_w, pallet_l, box_w, box_l):
 # --- Streamlit UI Configuration ---
 st.set_page_config(page_title="Palletizing Generator", layout="wide")
 st.title("📦 Python Palletizing Pattern Generator")
-st.write("Generate and visualize a palletizing pattern with smart interlocking checks.")
+st.write("Generate a centered palletizing pattern with mixed-orientation interlocking checks.")
 
 if 'pattern_data' not in st.session_state:
     st.session_state.pattern_data = None
@@ -194,7 +248,7 @@ pallet_w = st.sidebar.number_input("Pallet Width (mm)", min_value=100, value=800
 pallet_l = st.sidebar.number_input("Pallet Length (mm)", min_value=100, value=1200)
 
 st.sidebar.header("Box Dimensions")
-box_w = st.sidebar.number_input("Box Width (mm)", min_value=10, value=250) # Changed default to force asymmetry
+box_w = st.sidebar.number_input("Box Width (mm)", min_value=10, value=250) 
 box_l = st.sidebar.number_input("Box Length (mm)", min_value=10, value=350)
 box_h = st.sidebar.number_input("Box Height (mm)", min_value=10, value=150)
 
@@ -203,7 +257,7 @@ layers = st.sidebar.number_input("Number of Layers", min_value=1, value=3)
 interlocking = st.sidebar.checkbox("Interlocking Layers (Optimize for Stability)", value=True)
 
 if st.sidebar.button("Generate Pattern", type="primary"):
-    with st.spinner("Analyzing symmetry and calculating pattern..."):
+    with st.spinner("Calculating optimal centered layouts..."):
         result = generate_pallet_pattern(
             pallet_w, pallet_l, box_w, box_l, box_h, layers, interlocking
         )
@@ -239,4 +293,3 @@ if st.session_state.pattern_data:
             )
             with st.expander("View JSON Data"):
                 st.json(pattern_data)
-                
